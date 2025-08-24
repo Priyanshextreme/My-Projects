@@ -4,3 +4,4 @@ pandas
 numpy
 plotly
 streamlit-extras
+streamlit yfinance plotly requests
