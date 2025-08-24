@@ -10,22 +10,34 @@ import streamlit as st
 import yfinance as yf
 
 # -------------------------------
-# Plotly config
+# Plotly config + interactivity
 # -------------------------------
 PLOT_CONFIG = {
-    "scrollZoom": True,      # mouse wheel zoom
+    "scrollZoom": True,      # mouse wheel zoom (x). Hold SHIFT + wheel for y-zoom
     "doubleClick": "reset",  # double-click resets
-    "displaylogo": False,    # hide plotly logo
+    "displaylogo": False,
     "responsive": True,
 }
 
 def enhance_interactivity(fig: go.Figure, add_rangeslider: bool = True, default_drag: str = "pan") -> go.Figure:
+    """
+    Make charts feel like TradingView:
+    - Pan by drag, zoom by wheel (x), SHIFT+wheel (y)
+    - Range slider + range selector buttons
+    - Crosshair spikes
+    - Independent zoom on x and y (vertical zoom enabled)
+    """
     fig.update_layout(
         dragmode=default_drag,
         hovermode="x unified",
         margin=dict(l=20, r=20, t=40, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
+
+    # Allow zooming independently on both axes (enables vertical zoom)
+    fig.update_xaxes(fixedrange=False)
+    fig.update_yaxes(fixedrange=False)
+
     if add_rangeslider:
         fig.update_xaxes(
             rangeslider_visible=True,
@@ -41,6 +53,8 @@ def enhance_interactivity(fig: go.Figure, add_rangeslider: bool = True, default_
                 ]
             ),
         )
+
+    # Crosshair-like spikes
     fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="solid")
     fig.update_yaxes(showspikes=True, spikemode="across", spikedash="solid")
     return fig
@@ -167,7 +181,7 @@ with st.sidebar:
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker: str, start: dt.date, end: dt.date, interval: str) -> pd.DataFrame:
     try:
-        if interval.endswith("m"):  # intraday
+        if interval.endswith("m"):  # intraday uses period for robustness
             df = yf.download(ticker, period="7d", interval=interval, progress=False, threads=False)
         else:
             df = yf.download(ticker, start=start, end=end + dt.timedelta(days=1),
@@ -214,10 +228,12 @@ def plot_price(df: pd.DataFrame, label: str, style: str, show_volume_flag: bool)
                               low=df["Low"], close=df["Close"], name=f"{label} OHLC"))
         plot_close = df["Close"]
     elif style == "Area":
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines", fill="tozeroy", name=f"{label} Close"))
+        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines",
+                                 fill="tozeroy", name=f"{label} Close"))
         plot_close = df["Close"]
     else:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines", name=f"{label} Close"))
+        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines",
+                                 name=f"{label} Close"))
         plot_close = df["Close"]
 
     if show_volume_flag and "Volume" in df.columns and style in {"Line", "Area"}:
@@ -230,7 +246,8 @@ def plot_price(df: pd.DataFrame, label: str, style: str, show_volume_flag: bool)
 # Main
 # -------------------------------
 tickers = parse_tickers(st.session_state.get("last_tickers", tickers_text))
-if not tickers: st.stop()
+if not tickers:
+    st.stop()
 
 for t in tickers:
     st.subheader(f"📊 {t}")
@@ -240,16 +257,19 @@ for t in tickers:
         continue
 
     last, prev = float(df.iloc[-1]["Close"]), float(df.iloc[-2]["Close"])
-    st.metric("Last Price", f"{last:,.2f}", f"{((last-prev)/prev)*100:+.2f}%")
+    st.metric("Last Price", f"{last:,.2f}", f"{((last - prev) / prev) * 100:+.2f}%")
 
     fig, plot_close = plot_price(df, t, chart_style, show_volume)
+    # SMA/EMA overlays (use plotted close if HA/Area/Line)
     for ind in [i for i in indicators if "RSI" not in i]:
         if ind.startswith("SMA"):
-            w = int(ind.split()[1]); fig.add_trace(go.Scatter(x=df["Date"], y=sma(plot_close, w), mode="lines", name=ind))
+            w = int(ind.split()[1])
+            fig.add_trace(go.Scatter(x=df["Date"], y=sma(plot_close, w), mode="lines", name=ind))
         elif ind.startswith("EMA"):
-            w = int(ind.split()[1]); fig.add_trace(go.Scatter(x=df["Date"], y=ema(plot_close, w), mode="lines", name=ind))
+            w = int(ind.split()[1])
+            fig.add_trace(go.Scatter(x=df["Date"], y=ema(plot_close, w), mode="lines", name=ind))
 
-    fig = enhance_interactivity(fig)
+    fig = enhance_interactivity(fig, add_rangeslider=True, default_drag="pan")
     st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
 
     if "RSI 14" in indicators and len(df) >= 14:
@@ -257,7 +277,7 @@ for t in tickers:
         rsi_fig = go.Figure()
         rsi_fig.add_trace(go.Scatter(x=df["Date"], y=r, mode="lines", name="RSI(14)"))
         rsi_fig.add_hline(y=70, line_dash="dot"); rsi_fig.add_hline(y=30, line_dash="dot")
-        rsi_fig = enhance_interactivity(rsi_fig, add_rangeslider=False)
+        rsi_fig = enhance_interactivity(rsi_fig, add_rangeslider=False, default_drag="pan")
         st.plotly_chart(rsi_fig, use_container_width=True, config=PLOT_CONFIG)
 
 # -------------------------------
@@ -266,7 +286,9 @@ for t in tickers:
 if live_mode:
     placeholder = st.empty()
     for remaining in range(int(refresh_sec), 0, -1):
-        placeholder.caption(f"🔴 Live mode — updating in {remaining} sec…")
+        placeholder.caption(f"🔴 Live mode — updating in {remaining} sec… (tip: SHIFT+wheel = vertical zoom)")
         time.sleep(1)
-    try: st.rerun()
-    except Exception: st.experimental_rerun()
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
