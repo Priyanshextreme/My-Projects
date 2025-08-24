@@ -1,4 +1,4 @@
-# Stock Market Tracker (Streamlit)
+# Stock Tracker — layout toggle (vertical or 2-col grid), cards, logos, gapless intraday
 # Run: streamlit run app.py
 
 import datetime as dt
@@ -6,101 +6,57 @@ import time
 import requests
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 
-# -------------------------------
-# Plotly config + interactivity
-# -------------------------------
+# =============== Page / CSS ===============
+st.set_page_config(page_title="Stock Tracker", page_icon="📈",
+                   layout="wide", initial_sidebar_state="collapsed")
+
+st.markdown("""
+<style>
+  .block-container {padding-top:.6rem; padding-bottom:1rem; max-width:1400px;}
+  [data-testid="stSidebar"] .sidebar-title{
+    position:sticky; top:0; z-index:1000;
+    background:#0b1220; border:1px solid #263043; border-radius:12px;
+    padding:12px 14px; margin-bottom:10px;
+    color:#e5e7eb; letter-spacing:.5px;
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-weight:900; font-size:22px;
+  }
+  /* Card around each stock */
+  .stock-card{
+    background:#0c111a;
+    border:1px solid #273447;
+    border-radius:16px;
+    padding:18px 20px;
+    margin:22px 0;
+    box-shadow: 0 6px 18px rgba(0,0,0,.25);
+  }
+  .stock-card.compact { margin:14px 6px; }  /* used inside grid columns */
+  .toolbar {display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:.3rem;}
+</style>
+""", unsafe_allow_html=True)
+
 PLOT_CONFIG = {
-    "scrollZoom": True,      # mouse wheel zoom (x). Hold SHIFT + wheel for y-zoom
-    "doubleClick": "reset",  # double-click resets
+    "scrollZoom": True,       # wheel zoom (x). Hold SHIFT for vertical zoom
+    "doubleClick": "reset",
     "displaylogo": False,
     "responsive": True,
 }
 
-def enhance_interactivity(fig: go.Figure, add_rangeslider: bool = True, default_drag: str = "pan") -> go.Figure:
-    """
-    Make charts feel like TradingView:
-    - Pan by drag, zoom by wheel (x), SHIFT+wheel (y)
-    - Range slider + range selector buttons
-    - Crosshair spikes
-    - Independent zoom on x and y (vertical zoom enabled)
-    """
-    fig.update_layout(
-        dragmode=default_drag,
-        hovermode="x unified",
-        margin=dict(l=20, r=20, t=40, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-
-    # Allow zooming independently on both axes (enables vertical zoom)
-    fig.update_xaxes(fixedrange=False)
-    fig.update_yaxes(fixedrange=False)
-
-    if add_rangeslider:
-        fig.update_xaxes(
-            rangeslider_visible=True,
-            rangeselector=dict(
-                buttons=[
-                    dict(count=1, label="1D", step="day", stepmode="backward"),
-                    dict(count=5, label="5D", step="day", stepmode="backward"),
-                    dict(count=1, label="1M", step="month", stepmode="backward"),
-                    dict(count=3, label="3M", step="month", stepmode="backward"),
-                    dict(count=6, label="6M", step="month", stepmode="backward"),
-                    dict(count=1, label="1Y", step="year", stepmode="backward"),
-                    dict(step="all", label="All"),
-                ]
-            ),
-        )
-
-    # Crosshair-like spikes
-    fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="solid")
-    fig.update_yaxes(showspikes=True, spikemode="across", spikedash="solid")
-    return fig
-
-# -------------------------------
-# Utils
-# -------------------------------
+# =============== Helpers ===============
 def parse_tickers(text: str) -> list[str]:
-    parts = [t.strip().upper() for t in text.replace(";", ",").split(",") if t.strip()]
-    seen, out = set(), []
+    parts = [t.strip().upper() for t in (text or "").replace(";", ",").split(",") if t.strip()]
+    out, seen = [], set()
     for p in parts:
         if p not in seen:
-            seen.add(p); out.append(p)
+            out.append(p); seen.add(p)
     return out
 
-@st.cache_data(ttl=600, show_spinner=False)
-def yahoo_symbol_search(query: str) -> pd.DataFrame:
-    if not query or len(query) < 2:
-        return pd.DataFrame()
-    url = "https://query2.finance.yahoo.com/v1/finance/search"
-    params = {"q": query, "quotesCount": 25, "newsCount": 0, "quotesQueryId": "tss_match_query"}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json().get("quotes", [])
-        rows = []
-        for q in data:
-            rows.append({
-                "Symbol": q.get("symbol"),
-                "Name": q.get("shortname") or q.get("longname"),
-                "Type": q.get("quoteType"),
-                "Exchange": q.get("exchDisp"),
-                "Region": q.get("region"),
-            })
-        return pd.DataFrame(rows)
-    except Exception:
-        return pd.DataFrame()
-
-# -------------------------------
-# Indicators
-# -------------------------------
-def sma(series: pd.Series, window: int) -> pd.Series:
-    return series.rolling(window=window, min_periods=window).mean()
-
-def ema(series: pd.Series, window: int) -> pd.Series:
-    return series.ewm(span=window, adjust=False, min_periods=window).mean()
+def sma(s: pd.Series, w: int) -> pd.Series: return s.rolling(w, min_periods=w).mean()
+def ema(s: pd.Series, w: int) -> pd.Series: return s.ewm(span=w, adjust=False, min_periods=w).mean()
 
 def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
@@ -121,174 +77,222 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     ha["HA_Low"]  = ha[["HA_Open", "HA_Close", "Low"]].min(axis=1)
     return ha
 
-# -------------------------------
-# Page
-# -------------------------------
-st.set_page_config(page_title="Stock Market Tracker", page_icon="📈", layout="wide")
-st.title("📈 Stock Market Tracker")
-st.caption("Examples: US `AAPL, MSFT, TSLA` • India add `.NS` like `RELIANCE.NS` • Futures: `CT=F`")
+def session_for_symbol(sym: str):
+    """Infer regular session: .NS => NSE, else US."""
+    if sym.endswith(".NS"):
+        return ("Asia/Kolkata", dt.time(9, 15), dt.time(15, 30))  # NSE
+    return ("America/New_York", dt.time(9, 30), dt.time(16, 0))   # US
 
-with st.sidebar:
-    st.header("⚙️ Controls")
+def filter_trading_hours(df: pd.DataFrame, sym: str) -> pd.DataFrame:
+    """Keep only weekday regular-session bars (removes overnight gaps)."""
+    if df.empty: return df
+    tz_name, open_t, close_t = session_for_symbol(sym)
+    if getattr(df["Date"].dt, "tz", None) is None:
+        df["Date"] = df["Date"].dt.tz_localize("UTC")
+    local = df["Date"].dt.tz_convert(tz_name)
+    mask = (local.dt.weekday < 5) & (local.dt.time >= open_t) & (local.dt.time <= close_t)
+    out = df.loc[mask].copy()
+    out["Date"] = local.loc[mask].dt.tz_localize(None)
+    return out
 
-    st.markdown("**Search by name**")
-    q = st.text_input("Company / crypto / fund name", placeholder="e.g., Reliance, Apple")
-    res = yahoo_symbol_search(q)
-    if not res.empty:
-        choices = [f"{row.Symbol} — {row.Name or '—'} ({row.Exchange})" for _, row in res.iterrows()]
-        sel = st.selectbox("Matches", choices, index=0)
-        chosen_symbol = sel.split(" — ", 1)[0].strip() if sel else None
-        if st.button("➕ Add symbol", use_container_width=True) and chosen_symbol:
-            current = parse_tickers(st.session_state.get("last_tickers", "AAPL, MSFT, TSLA"))
-            if chosen_symbol not in current:
-                current.append(chosen_symbol)
-                st.session_state["last_tickers"] = ", ".join(current)
-                st.success(f"Added {chosen_symbol}")
-            else:
-                st.info(f"{chosen_symbol} already in list")
-
-    st.divider()
-
-    tickers_text = st.text_input(
-        "Ticker(s), comma-separated",
-        value=st.session_state.get("last_tickers", "AAPL, MSFT, TSLA"),
-        help="Tip: NSE India needs `.NS` suffix"
-    )
-    st.session_state["last_tickers"] = tickers_text
-
-    today = dt.date.today()
-    start_date = st.date_input("Start date", value=today - dt.timedelta(days=365))
-    end_date = st.date_input("End date", value=today)
-
-    interval_options = ["1m", "5m", "15m", "30m", "60m", "1d", "1wk", "1mo"]
-    interval = st.selectbox("Interval", interval_options, index=0)
-
-    st.subheader("Chart style")
-    chart_style = st.selectbox("Type", ["Line", "Area", "Candlestick", "OHLC", "Heikin-Ashi"], index=2)
-
-    indicators = st.multiselect(
-        "Indicators", ["SMA 20", "SMA 50", "EMA 20", "EMA 50", "RSI 14"], default=["SMA 20", "SMA 50"]
-    )
-    show_volume = st.checkbox("Show volume (Line/Area)", True)
-
-    st.divider()
-    live_mode = st.checkbox("🔴 Live mode (auto-refresh 1m)", value=False)
-    refresh_sec = st.number_input("Refresh every (seconds)", 5, 120, 15, 5)
-
-# -------------------------------
-# Data helpers
-# -------------------------------
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_history(ticker: str, start: dt.date, end: dt.date, interval: str) -> pd.DataFrame:
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_stock_logo(symbol: str) -> str | None:
+    """Try yfinance logo; else website -> Clearbit."""
     try:
-        if interval.endswith("m"):  # intraday uses period for robustness
-            df = yf.download(ticker, period="7d", interval=interval, progress=False, threads=False)
+        info = yf.Ticker(symbol).get_info()
+        url = (info or {}).get("logo_url")
+        if url: return url
+        website = (info or {}).get("website") or (info or {}).get("websiteUrl")
+        if website:
+            domain = website.split("//")[-1].split("/")[0]
+            return f"https://logo.clearbit.com/{domain}"
+    except Exception:
+        pass
+    try:
+        r = requests.get("https://query2.finance.yahoo.com/v1/finance/search",
+                         params={"q": symbol, "quotesCount": 1, "newsCount": 0},
+                         timeout=8)
+        r.raise_for_status()
+        quotes = r.json().get("quotes", [])
+        website = quotes[0].get("website") if quotes else None
+        if website:
+            domain = website.split("//")[-1].split("/")[0]
+            return f"https://logo.clearbit.com/{domain}"
+    except Exception:
+        pass
+    return None
+
+def enhance(fig: go.Figure) -> go.Figure:
+    # IMPORTANT: no rangeslider/rangeselector (fully inside chart; mouse zoom/pan only)
+    fig.update_layout(
+        dragmode="pan", hovermode="x unified",
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="#0f1116", paper_bgcolor="#0f1116", font=dict(color="#e5e5e5"),
+    )
+    fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(80,80,80,0.25)",
+                     rangeslider_visible=False)
+    fig.update_yaxes(fixedrange=False, showgrid=True, gridcolor="rgba(80,80,80,0.25)")
+    fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="solid")
+    fig.update_yaxes(showspikes=True, spikemode="across", spikedash="solid")
+    return fig
+
+# =============== Data fetch ===============
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_prices(tkr: str, start: dt.date, end: dt.date, interval: str) -> pd.DataFrame:
+    """Intraday → last 7d; Daily+ → start/end window."""
+    try:
+        if interval.endswith("m"):
+            df = yf.download(tkr, period="7d", interval=interval, progress=False, threads=False)
         else:
-            df = yf.download(ticker, start=start, end=end + dt.timedelta(days=1),
+            df = yf.download(tkr, start=start, end=end + dt.timedelta(days=1),
                              interval=interval, progress=False, threads=False)
     except Exception:
         return pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
+    if df is None or df.empty: return pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex): df.columns = [c[0] for c in df.columns]
     df = df.reset_index()
-    if "Date" not in df.columns:
-        df.rename(columns={"Datetime": "Date"}, inplace=True)
-    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-    return df
+    if "Date" not in df.columns: df.rename(columns={"Datetime": "Date"}, inplace=True)
+    df["Date"] = pd.to_datetime(df["Date"])  # keep tz for filtering
+    cols = [c for c in ["Date", "Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    return df[cols]
 
-def fetch_intraday_1m(ticker: str) -> pd.DataFrame:
-    try:
-        df = yf.Ticker(ticker).history(period="1d", interval="1m")
-        if df.empty: return pd.DataFrame()
-        df = df.reset_index().rename(columns={"Datetime": "Date"})
-        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-        return df
-    except Exception:
-        return pd.DataFrame()
+# =============== Sidebar ===============
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">📈 Stock Tracker</div>', unsafe_allow_html=True)
 
-# -------------------------------
-# Charting
-# -------------------------------
-def plot_price(df: pd.DataFrame, label: str, style: str, show_volume_flag: bool):
-    fig = go.Figure()
-    if style == "Heikin-Ashi":
-        ha = heikin_ashi(df)
-        fig.add_trace(go.Candlestick(x=ha["Date"], open=ha["HA_Open"], high=ha["HA_High"],
-                                     low=ha["HA_Low"], close=ha["HA_Close"],
-                                     name=f"{label} Heikin-Ashi"))
-        plot_close = ha["HA_Close"]
-    elif style == "Candlestick":
-        fig.add_trace(go.Candlestick(x=df["Date"], open=df["Open"], high=df["High"],
-                                     low=df["Low"], close=df["Close"], name=f"{label} Candles"))
-        plot_close = df["Close"]
-    elif style == "OHLC":
-        fig.add_trace(go.Ohlc(x=df["Date"], open=df["Open"], high=df["High"],
-                              low=df["Low"], close=df["Close"], name=f"{label} OHLC"))
-        plot_close = df["Close"]
-    elif style == "Area":
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines",
-                                 fill="tozeroy", name=f"{label} Close"))
-        plot_close = df["Close"]
-    else:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], mode="lines",
-                                 name=f"{label} Close"))
-        plot_close = df["Close"]
+    tickers_text = st.text_input(
+        "Tickers (comma-separated)",
+        value=st.session_state.get("tickers_input", "AAPL, MSFT, TSLA"),
+        help="Examples: AAPL • MSFT • TSLA • RELIANCE.NS • TCS.NS • BTC-USD"
+    )
+    st.session_state["tickers_input"] = tickers_text
 
-    if show_volume_flag and "Volume" in df.columns and style in {"Line", "Area"}:
-        fig.add_trace(go.Bar(x=df["Date"], y=df["Volume"], name="Volume", opacity=0.3, yaxis="y2"))
-        fig.update_layout(yaxis2=dict(title="Volume", overlaying="y", side="right", showgrid=False))
+    interval = st.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "60m", "1d", "1wk", "1mo"], index=0)
 
-    return fig, plot_close
+    indicator_opts = st.multiselect(
+        "Indicators", ["SMA 20", "SMA 50", "EMA 20", "EMA 50", "RSI 14", "Heikin Ashi"],
+        default=["SMA 20", "SMA 50"]
+    )
 
-# -------------------------------
-# Main
-# -------------------------------
-tickers = parse_tickers(st.session_state.get("last_tickers", tickers_text))
+    # Layout toggle
+    layout_choice = st.radio("Layout", ["Vertical (stacked)", "Grid (2 columns)"], index=0)
+
+    today = dt.date.today()
+    start_date = st.date_input("Start (for 1d/1wk/1mo)", value=today - dt.timedelta(days=365))
+    end_date   = st.date_input("End (for 1d/1wk/1mo)",   value=today)
+
+    live_mode   = st.checkbox("🔴 Live mode (auto-refresh 1m)", False)
+    refresh_sec = st.number_input("Refresh every (sec)", 5, 120, 15, 5)
+
+tickers = parse_tickers(st.session_state["tickers_input"])
 if not tickers:
-    st.stop()
+    st.info("Add at least one ticker in the sidebar."); st.stop()
 
-for t in tickers:
-    st.subheader(f"📊 {t}")
-    df = fetch_intraday_1m(t) if live_mode else fetch_history(t, start_date, end_date, interval)
-    if df.empty:
-        st.warning("No data found.")
-        continue
+# =============== Chart builders ===============
+def build_price_volume(df: pd.DataFrame, label: str, height: int = 700) -> tuple[go.Figure, pd.Series]:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.78, 0.22], specs=[[{}], [{}]])
+    fig.add_trace(go.Candlestick(x=df["Date"], open=df["Open"], high=df["High"],
+                                 low=df["Low"], close=df["Close"], name=label), row=1, col=1)
+    if "Volume" in df.columns:
+        fig.add_trace(go.Bar(x=df["Date"], y=df["Volume"], name="Volume",
+                             marker=dict(color="rgba(140,170,255,0.5)")), row=2, col=1)
+    fig.update_layout(height=height)
+    return fig, df["Close"]
 
-    last, prev = float(df.iloc[-1]["Close"]), float(df.iloc[-2]["Close"])
-    st.metric("Last Price", f"{last:,.2f}", f"{((last - prev) / prev) * 100:+.2f}%")
-
-    fig, plot_close = plot_price(df, t, chart_style, show_volume)
-    # SMA/EMA overlays (use plotted close if HA/Area/Line)
-    for ind in [i for i in indicators if "RSI" not in i]:
-        if ind.startswith("SMA"):
-            w = int(ind.split()[1])
-            fig.add_trace(go.Scatter(x=df["Date"], y=sma(plot_close, w), mode="lines", name=ind))
-        elif ind.startswith("EMA"):
-            w = int(ind.split()[1])
-            fig.add_trace(go.Scatter(x=df["Date"], y=ema(plot_close, w), mode="lines", name=ind))
-
-    fig = enhance_interactivity(fig, add_rangeslider=True, default_drag="pan")
+def rsi_panel(series: pd.Series, dates: pd.Series):
+    r = rsi(series, 14)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=dates, y=r, mode="lines", name="RSI(14)"))
+    fig.add_hline(y=70, line_dash="dot"); fig.add_hline(y=30, line_dash="dot")
+    fig.update_layout(height=250, margin=dict(l=10, r=10, t=30, b=10),
+                      yaxis=dict(title="RSI"), hovermode="x unified",
+                      plot_bgcolor="#0f1116", paper_bgcolor="#0f1116", font=dict(color="#e5e5e5"))
     st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
 
-    if "RSI 14" in indicators and len(df) >= 14:
-        r = rsi(df["Close"], 14)
-        rsi_fig = go.Figure()
-        rsi_fig.add_trace(go.Scatter(x=df["Date"], y=r, mode="lines", name="RSI(14)"))
-        rsi_fig.add_hline(y=70, line_dash="dot"); rsi_fig.add_hline(y=30, line_dash="dot")
-        rsi_fig = enhance_interactivity(rsi_fig, add_rangeslider=False, default_drag="pan")
-        st.plotly_chart(rsi_fig, use_container_width=True, config=PLOT_CONFIG)
+# =============== Per-chart renderer ===============
+def stock_card(symbol: str, compact: bool = False):
+    cls = "stock-card compact" if compact else "stock-card"
+    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
 
-# -------------------------------
-# Live refresh countdown
-# -------------------------------
+    # Title with logo + Impact
+    logo = get_stock_logo(symbol)
+    title_html = f"""
+    <div class='toolbar'>
+      {'<img src="'+logo+'" style="width:32px;height:32px;border-radius:6px;margin-right:8px;" onerror="this.style.display=\'none\'">' if logo else ''}
+      <span style="font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+                   font-weight:900; font-size:28px; letter-spacing:.5px;">
+        {symbol}
+      </span>
+    </div>
+    """
+    st.markdown(title_html, unsafe_allow_html=True)
+
+    df = fetch_prices(symbol, start_date, end_date, interval)
+    if df.empty:
+        st.warning("No data for this timeframe/ticker.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    if interval.endswith("m"):
+        df = filter_trading_hours(df, symbol)
+        if df.empty:
+            st.warning("No bars in regular session.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+    # Heikin Ashi (optional)
+    label = symbol
+    if "Heikin Ashi" in indicator_opts and len(df) >= 2:
+        ha = heikin_ashi(df)
+        df = df.copy()
+        df["Open"], df["High"], df["Low"], df["Close"] = ha["HA_Open"], ha["HA_High"], ha["HA_Low"], ha["HA_Close"]
+        label = f"{symbol} (Heikin Ashi)"
+
+    # Metric
+    last = float(df.iloc[-1]["Close"])
+    prev = float(df.iloc[-2]["Close"]) if len(df) > 1 else last
+    st.metric("Last Price", f"{last:,.2f}", f"{((last - prev) / prev) * 100:+.2f}%")
+
+    # Chart
+    fig, close_series = build_price_volume(df, label, height=700)
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])  # weekend skip
+
+    # Overlays
+    if "SMA 20" in indicator_opts and len(close_series) >= 20:
+        fig.add_trace(go.Scatter(x=df["Date"], y=sma(close_series, 20), mode="lines", name="SMA 20"), row=1, col=1)
+    if "SMA 50" in indicator_opts and len(close_series) >= 50:
+        fig.add_trace(go.Scatter(x=df["Date"], y=sma(close_series, 50), mode="lines", name="SMA 50"), row=1, col=1)
+    if "EMA 20" in indicator_opts and len(close_series) >= 20:
+        fig.add_trace(go.Scatter(x=df["Date"], y=ema(close_series, 20), mode="lines", name="EMA 20"), row=1, col=1)
+    if "EMA 50" in indicator_opts and len(close_series) >= 50:
+        fig.add_trace(go.Scatter(x=df["Date"], y=ema(close_series, 50), mode="lines", name="EMA 50"), row=1, col=1)
+
+    fig = enhance(fig)
+    st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
+
+    # RSI (optional)
+    if "RSI 14" in indicator_opts and len(close_series) >= 15:
+        rsi_panel(close_series, df["Date"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =============== Render (layout toggle) ===============
+if layout_choice.startswith("Vertical"):
+    for sym in tickers:
+        stock_card(sym, compact=False)
+else:
+    col1, col2 = st.columns(2, gap="large")
+    for i, sym in enumerate(tickers):
+        with (col1 if i % 2 == 0 else col2):
+            stock_card(sym, compact=True)
+
+# =============== Live refresh ===============
 if live_mode:
-    placeholder = st.empty()
-    for remaining in range(int(refresh_sec), 0, -1):
-        placeholder.caption(f"🔴 Live mode — updating in {remaining} sec… (tip: SHIFT+wheel = vertical zoom)")
+    ph = st.empty()
+    for s in range(int(refresh_sec), 0, -1):
+        ph.caption(f"🔴 Live mode — updating in {s} sec… (SHIFT+wheel = vertical zoom)")
         time.sleep(1)
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
+    try: st.rerun()
+    except Exception: st.experimental_rerun()

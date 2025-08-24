@@ -1,7 +1,7 @@
-streamlit
-yfinance
-pandas
-numpy
-plotly
-streamlit-extras
-streamlit yfinance plotly requests
+streamlit>=1.36
+yfinance>=0.2.40
+plotly>=5.22
+pandas>=2.2
+requests>=2.31
+pandas-market-calendars>=4.4
+exchange-calendars>=4.11
